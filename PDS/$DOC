@@ -1,0 +1,319 @@
+This data set contains several utilities for processing and
+analyzing SMF data.
+
+Among the programs in this collection -
+
+COPYMAN - A utility to copy the contents of a VSAM ESDS
+formatted as a MAN data set to a sequential data set.  COPYMAN
+provides a control data set that can specify a date and time
+range to copy.  Unlike IFASMFDP, the starting date and time and
+the ending date and time specify a true range; FROM(yyyy/mm/dd
+hh:mm:ss) TO(yyyy.mm.dd hh:mm:ss) will copy all the records in
+the specified range, where IFASMFDP, while it has similar
+parameters, does not work like that.  Also, unlike IFASMFDP, the
+input data set must be a MAN type data set.  COPYMAN has no
+option to format a MAN type data set after a successful copy.
+
+DSREF - A utility to report users using data sets.
+
+SCAN118 - A utility to show IP addresses used by TSO users.  It
+is particularly useful when the MVS IP stack is is directly
+connected to the internet, without using a VPN of some sort.  TSO
+users using a VPN cause unexpected IP addresses.
+
+SMFCOPY - A utility to copy sequential data sets containing SMF
+data.  As with COPYMAN, its date and time specifies a true range.
+
+SMFSTAT - A TSO command processor that produces a list similar to
+the output from the operator D SMF commanmd.  SMFSTAT will run in
+TSO in batch.
+
+                             C O P Y M A N
+
+COPYMAN copies SMF data from a VSAM ESDS frmatted to be used as a
+SYS1.MAN data set.  It is slightly faster than IFASMFDP.
+
+JCL --
+
+//        EXEC PGM=COPYMAN[,PARM=WRITEHDR]
+//SYSPRINT DD  SYSOUT=*
+//SMFIN    DD  -- Specify the MAN data set to copy --
+//SMFOUT   DD  -- Specify a sequential data set to receive the
+                  SMF data --
+//SYSIN    DD  -- Specify a control data set or PDS member
+                  containing options for COPYMAN --
+
+The EXEC statement PARM parameter specifies an option.  WRITEHDR
+directs COPYMAN to write an SMF type 2 record as the first SMF
+record in the output data set and an SMF type 3 record as the
+last record in the output data set.  COPYMAN does not write these
+records if PARM=WRIEHDR is not specified.
+
+The data set specified by the DD statement with DD name SYSPRINT
+is a sequential data set containing COPYMAN message output.  It
+is assigned DCB attributes RECFM=VBA, LRECL=125.
+
+The data set specified by the DD statement with DD name SMFIN is
+an SMF ESDS formated by IFASMFDP to be used as a MAN data set.
+If this DD statement is not present, COPYMAN attempts to allocate
+and use the currently active MAN data set.  Obviously, the user
+running COPYMAN must have READ access to the data set.
+
+The data set specified by the DD statement with DD name SMFOUT is
+a sequential data set.  COPYMAN forces RECFM=VBS, LRECL=32767 for
+the data set; it does not specify a BLKSIZE to allow the use of
+"system determined blksize" or a BLKSIZE specified by the DD
+statement.
+
+The data set specified by the DD statement with DD name SYSIN is
+a sequential data set or PDS containing control instructions for
+COPYMAN.
+
+COPYMAN accepts these control statements -
+
+SELECT  ttt,...,ttt-ttt
+EXCLUDE ttt,...,ttt-ttt
+FROM yyyy/mm/dd hh:mm:ss
+TO   yyyy/mm/dd hh:mm:ss
+
+ttt on the SELECT and EXCLUDE statements represents an SMF record
+type from 0 through 255. ttt-ttt specifies a range of SMF record
+types.  COPYMAN copies all records if no SELECT or EXCLUDE
+statement is present in the control data set.
+
+The FROM and TO control statements specify a date and time range
+for records to copy.  If FROM is not specified COPYMAN copies
+records starting at 1900/01/01.  If TO is not specified COPYMAN
+copies records from the FROM data and time through 2099/12/31.
+
+                               D S R E F
+
+DSREF reports data set usage by userid.  A typical report line
+looks like this -
+
+SMYERS.ISPF.ISPPROF                           1319
+ *SMYERS    SMFDUMP
+
+The 1319 at the right represents the number of times the data set was
+accessed.  SMYERS was flagged with an * to indicate the data set
+was opened for output by user SMYERS.
+
+DSREF also reports data set usage by userid.  A sample is -
+
+SMYERS
+ CBT001.U.CLIST CBT001.U.PANELS CBT001.U.SKELS ISSI.CLIST ISSI.SISPMENU
+ ISSI.SYSEXEC SMYERS.AA.ASM SMYERS.AB.ASM SMYERS.AC.ASM SMYERS.AC.ASMLIS
+ SMYERS.AC.CLIST SMYERS.AC.LOAD SMYERS.AC.OBJ SMYERS.AC.PCLIST
+
+This report is sorted by userid; the data set list is sorted by
+data set name.
+
+One final, optional report is a list of jobs and TSO sessions
+sorted by jobname or TSO userid.
+
+JCL -
+//        EXEC PGM=DSREF,PARM='option,...,option'
+//SYSPRINT DD  SYSOUT=*
+//SMF      DD  -- Specifiy data sets containing SMF data --
+
+DSREF accerpts these option strings in the EXEC statment PARM=
+parameter -
+
+SORTREFCOUNT - Sort the data set list by reference count.
+SORTDSN - Sort the list of referenced data sets by data set name.
+JOBLIST - List the jobs and TSO sessions in the input data,
+          JOBLIST may be useful in determining which jobs for
+          a user are referencing a data set.
+NOJOBLIST - Do not list the jobs and TSO sessions.
+WIDELINE - Print reports containing lists of userids over the
+           entire 120 byte output line in the SYSPRINT data set
+NOWIDELINE - Print reports containing lists of userids over an
+             80 byte output line.  This option is useful for
+             users displaying output on 3270 type displays.
+
+The default is equivalent to SORTREFCOUNT,NOWIDELINE,NOJOBLIST.
+
+DD statements -
+
+SYSPRINT - The DD statement with DD name SYSPRINT specifies the
+           DSREF report data set.  It has DCB parameters RECFM=VBA,
+           LRECL=125.  BLKSIZE is not specified so the system can
+           use "system determined blksize."
+SMF - The DD statement with DD name SMF dpecifies one or more
+      data sets containing SMF data.  GDG all data set allocation
+      can be used to process all data sets in a concatenation of
+      SMF data sets.
+
+                             S M F C O P Y
+
+SMFCOPY copies SMF data from a sequential data set containing SMF
+records to another data set.
+
+JCL --
+
+//        EXEC PGM=SMFCOPY
+//SYSPRINT DD  SYSOUT=*
+//SMFIN    DD  -- Data set containg SMF data --
+//SMFOUT   DD  -- Output data set containing SMF data --
+//SYSIN    DD  -- Sequential data set or PDS member containing
+                  control data for SMFCOPY --
+
+The data set specified by the DD statement with DD name SYSIN
+specifies data used to control the operation of SMFCOPY.
+SMFCOPY accepts these control statements --
+
+yyyy/mm/dd hh:mm:ss yyyy/mm/dd hh:mm:ss
+
+Unlike the other statements accepted by SMFCOPY, this statement
+is fixed format.  The first date/time pair specifies a start date
+and time.  Records before this date and time are not copied.  The
+second date/time pair specifies and ending date and time; SMF
+records after this date and time are not copied by SMFCOPY.
+
+SELECT  ttt,...,ttt-ttt
+EXCLUDE ttt,...,ttt-ttt
+
+ttt represets an SMF record type, from 0 through 255.  ttt-ttt
+represents a range of SMF records.
+
+SYS xxxx
+
+xxxx represents an SMF system ID, 1 to 4 characters.  Additional
+  charcters are ignored.
+
+                               S C A N 1 1 8
+
+SCAN118 displays the IP addresses used by TSO users.
+
+A typical session might look like this -
+
+SMYERS  09/13 10:00:02->09/14 11:43:37    25:43 TCP06012 108.24.138.140
+  ^           ^               ^             ^      ^           ^
+  |           |               |             |      |           |
+  |           |               |             |      |     IP V4 address
+  |           |               |             |   VTAM LU
+  |           |               |             |   assigned
+  |           |               |             |   to session
+  |           |               |           Session
+  |           |               |           time, as
+  |           |               |           hh:mm
+  |           |         Date & time
+  |           |         session terminated
+  |     Date & time
+  |     session started
+Userid
+
+It also prints a detailed report of TCPIP sessions.
+
+09/12  0:01:00->09/13  3:30:59 TCP06012    27:29 108.24.138.140
+       ^               ^          ^          ^         ^
+       |               |          |          |         |
+       |               |          |          |   IP V4 address
+       |               |          |        Session
+       |               |          |        time, as
+       |               |          |        hh:mm
+       |               |       VTAM LU
+       |               |       assigned to
+       |               |       session
+       |        Date & time
+       |        session terminated
+Date & time
+session started
+
+The date and time may represent the start date and time for the
+SMF data.
+
+The VTAM LU is important; it is the link between the SMF data for
+a TSO user and the IP/VTAM bridge session reported in SMF type
+118 records.
+
+One final report shows two or more users using the same IP
+address.  In most environments this represents multiple terminals
+sharing a LAN; the address is assigned to the router by the ISP.
+
+TWO OR MORE USERS USE THE FOLLOWING IP ADDRESSES -
+172.18.1.233    CBT001   Z531415
+174.85.16.96    KALINICH TRIDJK   TRIDJKA
+
+JCL --
+//        EXEC PGM=SCAN118,PARM='option,option'
+//SYSPRINT DD  -- Sequential report data set --
+//SMF      DD  -- Sequential data set containing SMF data --
+
+SCAN118 accepts these options -
+ - SORTTIME - Display the TSO session report sort by logon time.
+ - SORTUSER - Display the TSO session report sorted by userid.
+ - SORTIP -   Display the TSO session report sorted by IP address.
+ - DUMPRECS - Dump SMF type 118 records.
+ - NODUMPRECS - Do not dump SMF type 118 records.
+ - SESSION - Report the IP sessions.
+ - NOSESSION - Do not report the IP sessions.
+
+The defaults are equivalent to SORTTIME,SESSION.
+
+                              S M F S T A T
+
+SMFSTAT, unlike the other programs in this collection, is a TSO
+command processor to display data similar to the operator D SMF
+command.  SMFSTAT will run in TSO in batch and send its output to
+the SYSTSPRT data set.
+
+CAPACITY    USED    %   STATUS  DATA SET
+  72,000     873   1.21 ACTIVE  SYS1.CBT.MAN1
+  72,000      15   0.02 DUMPREQ SYS1.CBT.MAN2
+  72,000       9   0.01 DUMPREQ SYS1.CBT.MAN3
+
+The corresponding output from D SMF is -
+
+  NAME                VOLSER SIZE(BLKS) %FULL  STATUS
+P-SYS1.CBT.MAN1       CBTCAT     72000     1  ACTIVE
+S-SYS1.CBT.MAN2       CBTCAT     72000     1  DUMP REQUIRED
+S-SYS1.CBT.MAN3       CBTCAT     72000     1  DUMP REQUIRED
+
+The expanded percentage allows the terminal operator to correctly
+judge data set usage when the percentage is 99% + but not quite
+100%.
+
+           C O N T E N T S   O F   T H I S   D A T A   S E T
+
+Member
+$DOC     - This member
+COPYMAN  - Source for the COPYMAN program
+DSREF    - Source for the DSREF program
+JCL      - Sample JCL to assemble and link the SMF programs
+MINIFMT  - Source for MINIFMT, a message generator used by the
+           SMF programs
+QSORTS   - Internal sort functions used by the SMF programs.
+           The QSORT function was inspired by the QSORT function
+           in the C standard library.
+SCAN118  - Source for the SCAN118 program
+SMFCOPY  - Source for the SMFCOPY program
+SMFETIME - Source for a function to compute the elapsed time between
+           two SMF date/time pairs.
+SMFSTAT  - Source for a TSO command processor to display SMF data
+           set status
+
+  P R E P A R I N G   T H E   S M F   P R O G R A M S   L O A D   L I B
+
+Use the JCL member in this data set to assemble and link the SMF
+programs.  The JCL prepares the program in a new library.  Adjust
+the JCL as required to link the programs into a library with
+other programs.
+
+         I N S T A L L I N G   T H E   S M F   P R O G R A M S
+
+Install the SMF programs into any convenient link list library.
+SMFSTAT can also be installed in LPA or MLPA; not only is it very
+small, it is RMODE ANY and will install and run above the line.
+
+                             S U P P O R T
+
+Contact the author at mvsprog@yahoo.com.
+
+                                N O T E S
+
+COPYMAN and SMFCOPY were developed in a low use system with large
+SMF MAN data sets that typically accumulated several days and
+some times weeks of SMF data before they were dumped, so the
+dumped data sets were correspondingly quite large.  This is the
+reason the FROM and TO parameters specify a true range.

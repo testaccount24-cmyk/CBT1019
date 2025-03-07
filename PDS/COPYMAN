@@ -1,0 +1,1180 @@
+COPYMAN  TITLE '                     F A N D E Z H I   S M F   M A N   >
+               C O P Y   U T I L I T Y'
+***********************************************************************
+*                                                                     *
+* Title -- COPYMAN                                                    *
+*                                                                     *
+* Function / Operation -- COPYMAN copies the contents of an SMF MAN   *
+*   dataset to a "flat" dataset.                                      *
+*                                                                     *
+* JCL --                                                              *
+*   //        EXEC PGM=COPYMAN                                        *
+*   //SYSPRINT DD  SYSOUT=*                                           *
+*   //SMFIN    DD  -- Specify an ESDS dataset used as an SMF dataset -*
+*   //SMFOUT   DD  -- Specify a "flat" dataset --                     *
+*   //SYSIN    DD  -- Specify a "flat" dataset or a member of a PDS --*
+*                                                                     *
+*   The SYSIN dataset is optional.  If it is not specified, all data  *
+*   in the SMFIN dataset will be copied to the SMFOUT dataset.        *
+*                                                                     *
+*   The dataset or PDS member specified in the SYSIN dataset contains *
+*   control statements.  COPYMAN supports these control statements:   *
+*                                                                     *
+*   SELECT type,...,type-type                                         *
+*   EXCLUDE type,...,type-type                                        *
+*   FROM yyyy/mm/dd hh:mm:ss                                          *
+*   TO yyyy/mm/dd hh:mm:ss                                            *
+*                                                                     *
+*   The SELECT and EXCLUDE statements are not additive; only the      *
+*   last statement is effective.                                      *
+*                                                                     *
+*   The type text is an SMF record type, from 0 to 255.  Use          *
+*   type-type to specify a range of record types.                     *
+*                                                                     *
+*   The statement scanner issues no messages; generally it abandons   *
+*   scanning a statement if it finds an error.  The time of day       *
+*   is optional in the FROM and TO statements, and :ss is optional    *
+*   when a time is specified.                                         *
+*                                                                     *
+* Status / Change Level --                                            *
+*   V1L7 -- October 2021
+*    * Add PARM=WRITEHDR to JCL EXEC statement to write SMF type 2
+*      and type 3 records to the output data set
+*   V1L6 -- October 2021                                              *
+*    * Update SMF macro calls to reflect changes in IBM macros        *
+*   V1L5 -- January 2014                                              *
+*    * If the SMFIN DD statement is missing, allocate and use the     *
+*      live SMF data set                                              *
+*   V1L4 -- October 2013                                              *
+*    * C03 ABEND if SMFIN is empty.                                   *
+*   V1L3 -- August 2012                                               *
+*    * Code added to report the dataset names of the SMFIN and SMFOUT *
+*      datasets                                                       *
+*   V1L2 -- July 2012                                                 *
+*    * SMF type 2 and 3 records are prepared in storage but not       *
+*      output to the SMFOUT dataset.                                  *
+*   V1L1 -- June 2012                                                 *
+*    * Records with invalid date or time are dumped                   *
+*   V1L0 -- June 2012                                                 *
+*                                                                     *
+* Return Codes --                                                     *
+*    0 -- Dump completed with no errors                               *
+*    4 -- * One or more SMF records were not copied because the       *
+*           contents of the record date and time failed basic         *
+*           validity checks  OR                                       *
+*         * A control statement in the SYSIN dataset is invalid or    *
+*           has a data error.                                         *
+*    8 -- A read from the SMFIN dataset failed.  COPYMAN writes       *
+*         diagnostic information.                                     *
+*   12 -- COPYMAN was unable to open the SMFIN or SMFOUT datasets.    *
+*   16 -- COPYMAN was unable to open the SYSPRINT dataset.            *
+*                                                                     *
+* ABEND Codes -- None.                                                *
+*                                                                     *
+* Restrictions --                                                     *
+*   * COPYMAN uses fixed DD statements                                *
+*   * There is no ability to select record subtypes.                  *
+*   * COPYMAN does not have an option to initialize a MAN dataset.    *
+*     The dataset specified by SMFIN is strictly input.               *
+*   * The dataset specified by SMFIN must be a VSAM ESDS dataset      *
+*     formatted for SMF.                                              *
+*   * COPYMAN does not insert type 2 and type 3 records into the      *
+*     output dataset.                                                 *
+*                                                                     *
+* Attributes -- COPYMAN is not reenterable, not refreshable and       *
+*   not reusable.  COPYMAN operates in TCB mode, problem state and    *
+*   problem key.  COPYMAN uses no APF restricted system resources.    *
+*                                                                     *
+***********************************************************************
+         SPACE 5
+         MACRO
+&NAME    SETCC &ADDR,&RC
+         LCLC  &R
+         AIF   ('&RC'(1,1) EQ '('  ).RFORM
+&NAME    CLI   &ADDR,&RC           COMPARE EXISTING CODE WITH         ->
+                                    PROPOSED CODE
+         JH    *+L'*+4             BR IF EXISTING CODE > PROPOSED CODE
+         MVI   &ADDR,&RC           STORE NEW CODE
+         MEXIT
+.RFORM   ANOP
+&R       SETC  '&RC(1)'
+&NAME    CLM   &R,B'0001',&ADDR    COMPARE PROPOSED CODE WITH         ->
+                                    EXISTING CODE
+         JNH   *+L'*+4             BR IF PROPOSED CODE <= EXISTING CODE
+         STC   &R,&ADDR            REPLACE EXISTING CODE WITH NEW CODE
+         MEND
+         SPACE 5
+         MACRO
+&NAME    VBCLC  &TEXT,&REC,&OFFSET
+         LCLB  &QUIT
+         LCLC  &P,&R
+&P       SETC  '$&SYSNDX'
+         AIF   ('&TEXT'(1,1) EQ '''').TESTOFF
+         MNOTE 8,'*** THE FIRST PARAMETER MUST SPECIFY A TEXT STRING EN>
+               CLOSED IN SINGLE QUOTES ***'
+&QUIT    SETB  (1)
+.TESTOFF AIF   ('&OFFSET' NE '').TESTREC
+         MNOTE 8,'*** THE THIRD POSITIONAL PARAMETER FOR THE RECORD OFF>
+               SET MUST BE SPECIFIED ***'
+&QUIT    SETB  (1)
+.TESTREC AIF   ('&REC'(1,1) EQ '(').XPAND
+         MNOTE 8,'*** &REC MUST BE  SPECIFIED AS A REGISTER, EG SOMETHI>
+               NG LIKE (5) ***'
+&QUIT    SETB  (1)
+.XPAND   AIF   (&QUIT).X
+&R       SETC  '&REC(1)'
+&P.A     DC    0C&TEXT
+&NAME    LH    15,0(,&R)           LOAD THE RECORD LENGTH
+         CHI   15,L'&P.A+&OFFSET   COMPARE THE ACTUAL RECORD LENGTH    >
+                                    WITH THE LENGTH OF THE COMPARE AREA
+         JL    *+L'*+6             BR IF WE CAN'T DO THE COMPARE
+         CLC   =C&TEXT,&OFFSET.(&R.)  PERFORM THE COMPARE
+.X       MEND
+COPYMAN  RSECT                     DEFINE THE PROGRAM CSECT
+COPYMAN  AMODE 31                  DEFINE THE PROGRAM AMODE
+         PUSH  PRINT
+         PRINT NOGEN
+         DCBD  DSORG=QS,DEVD=DA    DEFINE THE DCB DATA AREA
+         CVT   DSECT=YES           DEFINE THE CVT DATA AREA
+         IEESMCA ,                 DEFINE THE SMCA
+         IFGACB ,                  DEFINE THE ACB DATA AREA
+         IFGRPL ,                  DEFINE THE RPL DATA AREA
+SMFREC   DSECT                     DEFINE A GENERIC SMF RECORD
+SMFRECL  DS    2AL2                RECORD LENGTH IN THE RDW
+         DS    BL1                 FLAGS
+SMFRTYPE DS    AL1                 RECORD TYPE
+SMFRTME  DS    XL4                 RECORD TIME
+SMFRDTE  DS    XL4                 RECORD DATE
+         ORG   SMFREC
+         IFASMFR 2
+SMFREC   DSECT
+T2LEN    EQU   *-SMFREC
+         ORG   SMFREC
+         IFASMFR 3
+SMFREC   DSECT
+T3LEN    EQU   *-SMFREC
+         IEFZB4D0 ,
+         IEFZB4D2 ,
+RDS      DSECT                     SMF RECORDING DATA SET
+RDSRDS   DS    CL4'RDS'            EYECATCHER
+RDSNEXT  DS    A                   -> NEXT RDS
+RDSPREV  DS    A                   -> PREVIOUS RDS
+RDSFLAG  DS    AL1                 FLAGS --
+RDSAVAIL EQU   X'04'                 SMF DATA SET IS AVAILABLE
+         DS    2AL1
+RDSDSNL  DS    AL1                 LENGTH OF DATA SET NAME
+RDSDSN   DS    CL44                DATA SET NAME
+RDSVOL   DS    CL6                 VOLUME
+         DS    2AL1
+RDSDDN   DS    CL8                 DDNAME
+RDSSIZE  DS    F                   NUMBER OF BLOCKS IN DATA SET
+RDSUSED  DS    F                   USED BLOCKS IN DATA SET
+         POP   PRINT
+DVBLINE  DSECT
+DVBRDW   DS    XL4                 RECORD DESCRIPTOR WORD
+DVBCC    DS    C                   CARRIAGE CONTROL CHARACTER
+DVBOFFSET DS   XL4,CL2             OFFSET IN RECORD
+DVBWORD1 DS    CL8,C
+DVBWORD2 DS    CL8,C
+DVBWORD3 DS    CL8,C
+DVBWORD4 DS    CL8,CL2
+DVBWORD5 DS    CL8,C
+DVBWORD6 DS    CL8,C
+DVBWORD7 DS    CL8,C
+DVBWORD8 DS    CL8,CL2
+DVBSTAR1 DS    C
+DVBTEXT  DS    CL32
+DVBSTAR2 DS    C
+DVBTXTL  EQU   *-DVBCC
+DVBLINEL EQU   *-DVBRDW
+         SPACE 5
+COPYMAN  RSECT                     RETURN TO PROGRAM CSECT
+         USING COPYMAND,11         ESTABLISH DATA AREA ADDRESSABILITY
+         USING *,12                ESTABLISH PROGRAM ADDRESSABILITY
+         SAVE  (14,12),,'COPYMAN &SYSDATE &SYSTIME'  SAVE REGISTERS
+         BRAS  11,*+L'*+4          BR AROUND DATA AREA ADDRESS
+         DC    AL4(COPYMAND)       ADDRESS OF DATA AREA
+         L     11,0(,11)           LOAD ADDR OF THE DATA AREA
+         LR    12,15               COPY ENTRY POINT ADDRESS TO REG 12
+         LA    15,SAVEAREA         LOAD ADDR OF THE NEW SAVE AREA
+         ST    13,4(,15)           ADD NEW SAVE AREA TO THE
+         ST    15,8(,13)            SAVE AREA CHAIN
+         LR    13,15               ESTABLISH THE NEW SAVE AREA POINTER
+         L     2,0(,1)             LOAD ADDRESS OF THE PARM TEXT
+         LA    0,FMTWORK           LOAD ADDR OF THE MINIFMT WORK AREA
+         LA    1,FMT01             LOAD ADDR OF THE RUN DATE FORMAT
+         L     15,=V(MINIFMT)      LOAD ADDR OF MINIFMT
+         CALL  (15)                FORMAT THE RUN DATE & TIME
+         LHI   15,4                LOAD THE LENGTH OF AN RDW
+         LA    0,0(15,1)           COMPUTE ADDR OF THE RUN DATE & TIME
+         LH    1,0(,1)             LOAD THE LENGTH
+         SR    1,15                SUBTRACT LENGTH OF AN RDW
+         LR    15,1                COPY THE LENGTH TO REG 15
+         LA    14,PAGEHDR+95       LOAD ADDR OF THE RUN DATE & TIME   ->
+                                    IN THE PAGE HEADER
+         MVCL  14,0                COPY RUN DATE & TIME TO THE        ->
+                                    PAGE HEADER
+         LA    1,OPARM1            LOAD ADDR OF AN OPEN PARM LIST
+         BRAS  14,OPENLIST         OPEN SYSPRINT
+         LTR   15,15               TEST IF OPEN OK
+         JZ    CALLPSCN            BR IF OPEN OK
+         SETCC RC,16               SET THE RETURN CODE
+         J     EXIT                AND EXIT
+CALLPSCN BRAS  14,PARMSCAN         SCAN EXEC STMNT PARM TEXT
+SCANINP  BRAS  14,GETPARM          GET SYSIN
+         DEVTYPE DCBDDNAM-IHADCB+SMFIN,16(,13) TEST IF SMFIN DD STMT
+         LTR   15,15               TEST DEVTYPE RETURN CODE
+         JZ    OPENSMF             BR IF SMFIN ALREADY ALLOCATED
+         L     15,CVTPTR           LOAD ADDR OF THE CVT
+         L     15,CVTSMCA-CVTMAP(,15)  LOAD ADDR OF THE SMCA
+         LA    15,(SMCAFRDS-SMCABASE)-(RDSNEXT-RDS)(,15)  LOAD ADDR   ->
+                                                        OF A DUMMY RDS
+NEXTRDS  ICM   15,B'1111',RDSNEXT-RDS(15)  LOAD ADDR OF THE NEXT RDS
+         JNZ   TSTRFLAG            BR IF NOT END OF CHAIN
+         LA    1,FMT11             WRITE THE
+         BRAS  14,FMTLINE           DIAGNOSTIC MESSAGE
+         SETCC RC,12               SET THE RETURN CODE
+         J     EXIT
+TSTRFLAG CLI   RDSFLAG-RDS(15),0   TEST IF ACTIVE
+         JNE   NEXTRDS             BR IF NOT
+         MVC   ADSN,RDSDSN-RDS(15) COPY THE DSN TO THE DYNALLOC PARMS
+         LA    1,A                 LOAD ADDR OF THE PARM LIST
+         DYNALLOC ,                TRY TO ALLOCATE THE ACTIVE MAN D.S.
+         LTR   15,15               TEST THE RETURN CODE
+         JZ    NOTIFY              BR IF ALLOCATE OK
+         LA    1,FMT12             OOPS
+         BRAS  14,FMTLINE
+         SETCC RC,12               RESET THE RETURN CODE
+         J     EXIT
+NOTIFY   LA    1,FMT13
+         BRAS  14,FMTLINE
+OPENSMF  OPEN  MF=(E,OPARM2)       OPEN THE SMF DATASET
+         TM    ACBOFLGS-IFGACB+SMFIN,ACBOPEN   VERIFY THE ACB IS OPEN
+         JNZ   OPENOUT             BR IF MAN DATASET IS OPEN
+         SETCC RC,12               SET RC = 12
+         J     EXIT
+OPENOUT  LA    1,OPARM3            LOAD ADDR OF THE OPEN PARM LIST
+         BRAS  14,OPENLIST         OPEN THE OUTPUT DATASET
+         LTR   15,15               TEST THE RETURN CODE
+         JZ    COPYSMF             BR IF OPEN DID NOT TAKE
+         SETCC RC,12               SET RC = 12
+         J     EXIT
+COPYSMF  LA    1,=CL8'SMFIN'       LOAD ADDR OF A DDNAME
+         BRAS  14,RPTDSN           REPORT THE DATASET NAME
+         LA    1,=CL8'SMFOUT'      LOAD ADDR OF A DDNAME
+         BRAS  14,RPTDSN           REPORT THE DATASET NAME
+         LHI   8,1                 SET REG 8 = 1
+         SR    9,9                 SET INPUT RECORDS = 0
+         SR    10,10               SET OUTPUT RECORDS = 0
+         L     15,CVTPTR           LOAD ADDR OF THE CVT
+         L     15,CVTSMCA-CVTMAP(,15)  LOAD ADDR OF THE SMCA
+         MVC   SMF2SID-SMFREC+T2REC,SMCASID-SMCABASE(15)  COPY SID TO ->
+                                                      THE TYPE 2 RECORD
+         MVC   SMF3SID-SMFREC+T3REC,SMCASID-SMCABASE(15)  COPY SID TO ->
+                                                      THE TYPE 3 RECORD
+         TIME  BIN                 GET THE CURRENT DATE & TIME
+         STCM  0,B'1111',SMF2TME-SMFREC+T2REC  STORE THE TIME
+         STCM  1,B'1111',SMF2DTE-SMFREC+T2REC  STORE THE DATE
+         TM    PSOPTION,WRITEHDR   WRITE DUMP HDR & TRAILER?
+         JZ    SKIPT2REC           NO
+         PUT   SMFOUT,T2REC        WRITE THE TYPE 2 RECORD
+SKIPT2REC DC    0H'0'
+         LA    1,T2REC             LOAD ADDR OF THE PRESUMPTIVE RECORD
+*        BRAS  14,DUMPVB           DUMP IT
+         TIME  DEC                 GET THE CURRENT TIME
+         STM   0,1,DSTART          SAVE THE DATE & TIME
+READSMF  GET   RPL=SMFRPL          READ A RECORD
+         LTR   2,15                TEST THE RETURN CODE
+         JZ    READOK              BR IF RC = 0
+         LA    1,FMT07             LOAD ADDR OF THE FORMAT
+         BRAS  14,FMTLINE          FORMAT & PRINT THE ERROR LINE
+         SETCC RC,8                SET RC = 8
+         J     EXIT                AND EXIT
+* VALIDATE THE RECORD
+READOK   L     2,=A(IOBUF)         LOAD THE ADDR OF THE RECORD
+         L     0,RPLRLEN-IFGRPL+SMFRPL  LOAD THE ACTUAL RECORD LENGTH
+         C     0,=A(X'7FFF')       COMPARE ACTUAL RECORD LENGTH W/    ->
+                                    MAX LENGTH OF A VB RCORD
+         JH    RECLENOK            SKIP THE COMPARE IF THE ACTUAL     ->
+                                    COMPARE IS INVALID
+         CLM   0,B'0011',0(2)      COMPARE ACTUAL RECORD LENGTH W/    ->
+                                    RECORD LENGTH ON THE RDW
+         JNL   *+L'*+2             BR IF ACTUAL RECORD LENGTH >=      ->
+                                    RECORD LENGTH IN THE RDW
+         DC    H'0'                ABEND IF ACTUAL RECORD LENGTH <    ->
+                                    RECORD LENGTH IN THE RDW
+RECLENOK VBCLC 'SMFEOFMARK',(2),4  TEST SOFTWARE EOF
+         JE    SMFEOF              BR IF SO
+         AR    9,8                 UPDATE INPUT RECORDS
+         USING SMFREC,2            ESTABLISH RECORD ADDRESSABILITY
+         TP    SMFRDTE             TEST IF DATE IS PACKED DECIMAL
+         JNZ   BADDTTM             BR IF NO
+         ICM   0,B'1111',SMFRTME   LOAD THE TIME
+         JM    BADDTTM             BR IF TIME IS BAD
+         C     0,=A(24*60*60*100-1)  TEST VALUE
+         JNH   LOWHIGH             BR IF TIME IS OK
+BADDTTM  SETCC RC,4                SET RC = 4
+         LR    1,2                 COPY THE RECORD ADDR TO REG 1
+         BRAS  14,DUMPVB           DUMP THE RECORD
+         J     READSMF
+* TEST IF THE RECORD DATE & TIME < PREVIOUS LOW DATE & TIME
+LOWHIGH  CP    SMFRDTE,LOWDATE+4(4)  COMPARE DATE
+         JL    NEWLOW              BR IF LOW
+         JNE   TESTHDATE           BR IF NOT EQUAL
+         C     0,LOWDATE           COMPARE TIME OF DAY
+         JNL   TESTHDATE
+NEWLOW   MVC   LOWDATE,SMFRTME     REPLACE THE LOW DATE
+* TEST IF THE RECORD DATE & TIME > PREVIOUS HIGH DATE & TIME
+TESTHDATE CP   SMFRDTE,HIGHDATE+4(4)  COMPARE HIGH DATE
+         JH    NEWHIGH             BR IF NEW HIGH DATE
+         JNE   TESTRNG             BR IF NOT EQUAL
+         C     0,HIGHDATE          COMPARE TIME OF DAY
+         JNH   TESTRNG             BR IF TIME <= HIGH TIME
+NEWHIGH  MVC   HIGHDATE,SMFRTME    REPLACE HIGH DATE & TIME
+* TEST IF RECORD FALLS WITHIN THE RANGE OF DATE & TIME TO PROCESS
+TESTRNG  ICM   0,B'1111',SMFRTME   LOAD THE TIME
+         ICM   1,B'1111',SMFRDTE   LOAD THE DATE
+         CLM   1,B'1111',FROMTIME+4 TEST DATE
+         JL    READSMF             BR IF RECORD DATE < TARGET DATE
+         JNE   TR0100              BR IF RECORD DATE > TARGET DATE
+         CLM   0,B'1111',FROMTIME  DATES ARE EQUAL, COMPARE TIME
+         JNH   READSMF             BR IF TIME < TARGET
+TR0100   CLM   1,B'1111',TOTIME+4  COMPARE DATE
+         JH    READSMF             BR IF DATE OUT OF RANGE
+         JNE   GETTYPE             BR IF DATE < RANGE DATE
+         CLM   0,B'1111',TOTIME    COMPARE TIME
+         JH    READSMF             BR IF TIME < RANGE TIME
+* GATHER STATISTICS DATA BY RECORD TYPE
+GETTYPE  SR    3,3                 SET REG 3 = 0
+         IC    3,SMFRTYPE          LOAD THE RECORD TYPE
+         LR    4,3                 COPY THE RECORD TYPE TO REG 4
+         MHI   3,8*4               MULTIPLY RECORD TYPE BY THE        ->
+                                    LENGTH OF A RECORD GROUP
+         LA    3,RTAB(3)           COMPUTE ADDR OF THE RECORD TYPE    ->
+                                    GROUP FOR THIS RECORD
+         LHI   0,1                 SET REG 0 = 1
+         A     0,0(,3)             ADD THE RECORD COUNT
+         ST    0,0(,3)             UPDATE THE RECORD COUNT
+         LH    0,0(,2)             LOAD THE RECORD LENGTH
+         A     0,4(,3)             ADD BYTES FOR THIS RECORD
+         ST    0,4(,3)             UPDATE BYTES FOR THE RECORD
+* DETERMINE IF RECORD IS SELECTED
+         IC    0,STAB(4)           LOAD SELECTION ATTRIBUTE
+         CLM   0,B'0001',=X'FF'    TEST IF SELECT
+         JNE   READSMF             BR IF NOT
+         LHI   0,1                 SET REG 0 = 1
+         A     0,16(,3)            ADD OUTPUT RECORD COUNT
+         ST    0,16(,3)            STORE THE OUTPUT RECORD COUNT
+         LH    0,0(,2)             LOAD THE RECORD LENGTH
+         A     0,20(,3)            ADD LENGTHS FOR THE RECORD
+         ST    0,20(,3)            UPDATE LENGTHS
+         AR    10,8                UPDATE OUTPUT RECORDS
+         PUT   SMFOUT,(2)          WRITE THE RECORD
+         J     READSMF             GO READ THE NEXT RECORD
+         DROP  2                   KILL SMF RECORD ADDRESSABILITY
+         EJECT
+         CNOP  0,8
+SMFEOF   TIME  BIN                 GET THE CURRENT DATE & TIME
+         STCM  0,B'1111',SMF3TME-SMFREC+T3REC  STORE THE TIME
+         STCM  1,B'1111',SMF3DTE-SMFREC+T3REC  STORE THE DATE
+         TM    PSOPTION,WRITEHDR   WRITE DUMP HDR & TRAILER?
+         JZ    SKIPT3REC           NO
+         PUT   SMFOUT,T3REC        WRITE THE TYPE 2 RECORD
+SKIPT3REC DC    0H'0'
+         LA    1,T3REC             LOAD ADDR OF THE RECORD
+*        BRAS  14,DUMPVB           DUMP IT
+         TIME  DEC                 GET THE CURRENT DATE & TIME
+         STM   0,1,DEND            SAVE THE DATE & TIME
+         LA    1,FMT09             LOAD ADDR OF DUMP START & END MSG
+         BRAS  14,FMTLINE          FORMAT & WRITE THE MESSAGE
+         LTR   9,9                 TEST INPUT RECORDS
+         JNZ   STATS100
+* NO INPUT RECORDS, WRITE DISNOSTIC
+         LA    1,FMT05             LOAD ADDR OF THE FORMAT
+         BRAS  14,FMTLINE          WRITE THE MESSAGE
+         SETCC RC,4                SET RC = 4
+         J     EXIT                AND EXIT
+STATS100 LA    1,FMT03             LOAD ADDR OF THE FORMAT
+         BRAS  14,FMTLINE          FORMAT & PRINT THE SUMMARY LINE
+         L     0,LOWDATE           LOAD THE LOW TIME
+         L     15,=V(CNVTBIN)      LOAD ADDR OF BINARY TIME CONVERTER
+         CALL  (15)                CONVERT BINARY TIME TO             ->
+                                    DECIMAL TIME
+         ST    0,LOWDATE           STORE DECIMAL TIME
+         L     0,HIGHDATE          LOAD THE HIGH TIME
+         L     15,=V(CNVTBIN)      LOAD ADDR OF BINARY TIME CONVERTER
+         CALL  (15)                CONVERT BINARY TIME TO             ->
+                                    DECIMAL TIME
+         ST    0,HIGHDATE          STORE DECIMAL TIME
+         LA    1,FMT06             LOAD ADDR OF THE FORMAT
+         BRAS  14,FMTLINE          FORMAT THE LOW AND HIGH DATE & TIME
+* FORMAT RECORD STATISTICS.
+         LA    1,HDR01             LOAD ADDR OF HEADER 1
+         BRAS  14,FMTLINE          FORMAT & PRINT THE HEADER
+         LA    1,HDR02             LOAD ADDR OF HEADER 2
+         BRAS  14,FMTLINE          FORMAT & PRINT THE HEADER
+         LA    1,HDR03             LOAD ADDR OF HEADER 3
+         BRAS  14,FMTLINE          FORMAT & PRINT THE HEADER
+         LA    3,RTAB              LOAD ADDR OF THE RECORD TABLE
+         SR    4,4                 SET RECORD # = 0
+         LHI   5,256               LOAD ENTRIES IN RTAB
+STATS200 ICM   15,B'1111',0(3)     LOAD INPUT RECORD COUNT
+         JZ    STATS500            BR IF 0
+         SR    0,0                 SET REG 0 = 0
+         L     1,4(,3)             LOAD INPUT BYTES
+         M     0,=F'100'           MULTIPLY INPUT BYTES BY 100
+         DR    0,15                COMPUTE AVERAGE RECORD LENGTH
+         CVD   1,16(,13)           CONVERT AVERAGE RECORD LENGTH      ->
+                                    TO DECIMAL
+         MVC   AVGIN,AVGMASK       COPY EDIT MASK
+         ED    AVGIN,20(13)        CONVERT AVERAGE INPUT RECORD       ->
+                                    LENGTH TO DECIMAL DIGITS
+         MVC   AVGOUT,AVGNULL      SET BASIC OUTPUT
+         MVC   PCTIN,PCTNULL       PRIME PERCENTAGE
+         MVC   PCTOUT,PCTNULL       AREAS
+         LTR   9,9                 TEST IF INPUT RECORDS = 0
+         JZ    STATS300            BR IF SO
+         SR    0,0                 SET REG 0 = 0
+         L     1,0(,3)             LOAD RECORDS
+         M     0,=F'10000'         MULTIPLY BY 10000
+         DR    0,9                 DIVIDE RECORDS BY TOTAL RECORDS
+         CVD   1,16(,13)           CONVERT PERCENTAGE TO DECIMAL
+         MVC   PCTIN,PCTMASK       COPY EDIT MASK
+         ED    PCTIN,21(13)        CONVERT PERCENTAGE TO EDITED OUTPUT
+         LTR   10,10               TEST OUTPUT RECORDS
+         JZ    STATS300            BR IF NONE
+         SR    0,0                 SET REG 0 = 0
+         L     1,16(,3)            LOAD OUTPUT RECORDS
+         M     0,=F'10000'         MULTIPLY BY 10000
+         DR    0,10                DIVIDE BY TOTAL RECORDS
+         CVD   1,16(,13)           CONVERT PERCENTAGE TO DECIMAL
+         MVC   PCTOUT,PCTMASK      COPY EDIT MASK TO OUTPUT AREA
+         ED    PCTOUT,21(13)       CONVERT PERCENTAGE TO EDITED OUTPUT
+STATS300 ICM   15,B'1111',16(3)    LOAD OUTPUT RECORDS
+         JZ    STATS400            BR IF 0
+         SR    0,0                 SET REG 0 = 0
+         L     1,20(,3)            LOAD OUTPUT BYTES
+         M     0,=F'100'           MULTIPLY OUTPUT BYTES BY 100
+         DR    0,15                COMPUTE AVERAGE RECORD LENGTH
+         CVD   1,16(,13)           CONVERT AVERAGE RECORD LENGTH      ->
+                                    TO DECIMAL
+         MVC   AVGOUT,AVGMASK      COPY EDIT MASK
+         ED    AVGOUT,20(13)       CONVERT AVERAGE OUTPUT RECORD      ->
+                                    LENGTH TO DECIMAL DIGITS
+STATS400 LA    1,FMT02             LOAD ADDR OF THE FORMAT
+         BRAS  14,FMTLINE          FORMAT THE LINE
+STATS500 AHI   4,1                 UPDATE THE RECORD NUMBER
+         AHI   3,32                COMPUTE ADDR OF THE NEXT RTAB SLOT
+         BRCT  5,STATS200          GO LIST THE NEXT RTAB SLOT
+EXIT     CLOSE MF=(E,CPARM2)       CLOSE SMFIN                     V1L4
+         LA    1,CPARM3            CLOSE SMFOUT                    V1L4
+         BRAS  14,CLOSELST
+         LA    1,FMT08             LOAD ADDR OF FORMAT
+         BRAS  14,FMTLINE          WRITE SIGNOFF MESSAGE
+         LA    1,CPARM1            CLOSE SYSPRINT
+         BRAS  14,CLOSELST
+         L     13,4(,13)           LOAD ADDR OF THE PREVIOUS SAVE AREA
+         SR    15,15               SET REG 15 = 0
+         IC    15,RC               LOAD THE RETURN CODE
+         RETURN (14,12),T,RC=(15)  RESTORE REGS & RETURN
+         EJECT
+         CNOP  0,8
+RPTDSN   BASR  15,0                STORE CURRENT ADDRESS IN REG 15
+         SAVE  (14,1),,RPTDSN      SAVE REGISTERS
+         LA    15,72(,13)          COMPUTE ADDR OF THE NEXT SAVE AREA
+         ST    15,8(,13)           ADD THE NEW SAVE AREA TO
+         ST    13,4(,15)            THE SAVE AREA CHAIN
+         LR    13,15               ESTABLISH A NEW SAVE AREA POINTER
+         MVC   DCBDDNAM-IHADCB+JFCBDCB,0(1)  COPY DDNAME TO THE DCB
+         RDJFCB MF=(E,JFCBPRM)     READ THE JFCB
+         LA    1,FMT10             LOAD ADDR OF THE FORMAT
+         BRAS  14,FMTLINE          DISPLAY THE DDNAME AND DSNAME
+         L     13,4(,13)           LOAD ADDR OF THE PREVIOUS SAVE AREA
+         RETURN (14,1),T           RESTORE REGS & RETURN
+         EJECT
+         CNOP  0,8
+DUMPVB   BASR  15,0                STORE CURRENT ADDRESS IN REG 15
+         SAVE  (14,12),,DUMPVB     SAVE REGISTERS
+         LA    15,72(,13)          COMPUTE ADDR OF THE NEXT SAVE AREA
+         ST    15,8(,13)           ADD THE NEW SAVE AREA TO
+         ST    13,4(,15)            THE SAVE AREA CHAIN
+         LR    13,15               ESTABLISH A NEW SAVE AREA POINTER
+         LH    5,0(,1)             LOAD LENGTH OF THE RECORD
+         AR    5,1                 COMPUTE THE END OF THE RECORD
+         LR    3,1                 COPY START OF THE RECORD TO REG 3
+         LR    4,1                    AND TO REG 4
+         LA    10,FMTWORK          LOAD ADDR OF THE BUILD AREA
+         USING DVBLINE,10          ESTABLISH ADDRESSABILITY
+         LA    1,DVBHDR            LOAD ADDR OF THE DUMP HEADER
+         BRAS  14,OUTEDIT          WRITE THE DUMP HEADER
+DVB0100  LR    0,5                 COPY END OF THE RECORD TO REG 0
+         SR    0,4                 COMPUTE BYTES LEFT IN THE RECORD
+         JNP   DVB0500             EXIT IF DONE
+         LR    1,4                 COPY START
+         SR    1,3                 COMPUTE THE OFFSET
+         STH   1,16(,13)           SAVE THE OFFSET
+         MVI   DVBCC,C' '          BLANK THE ENTIRE LINE
+         MVC   DVBOFFSET(DVBTXTL-1),DVBCC
+         MVI   DVBSTAR1,C'*'
+         MVI   DVBSTAR2,C'*'
+         L     15,=AL2(DVBLINEL,0) INITIALIZE THE RDW
+         ST    15,DVBRDW
+         UNPK  DVBOFFSET(5),16(3,13)  TRANSLATE THE OFFSET TO
+         TR    DVBOFFSET,DVBHEXTAB     HEXADECIMAL DIGITS
+         MVI   DVBOFFSET+4,C' '
+         CHI   0,32                COMPARE BYTES LEFT W/BYTES IN A LINE
+         JNH   DVB0200             BR IF 32 OR LESS BYTES IN THE LINE
+* BUILD A COMPLETE LINE
+         UNPK  DVBWORD1(9),00(5,4)
+         UNPK  DVBWORD2(9),04(5,4)
+         UNPK  DVBWORD3(9),08(5,4)
+         UNPK  DVBWORD4(9),12(5,4)
+         UNPK  DVBWORD5(9),16(5,4)
+         UNPK  DVBWORD6(9),20(5,4)
+         UNPK  DVBWORD7(9),24(5,4)
+         UNPK  DVBWORD8(9),28(5,4)
+         TR    DVBWORD1,DVBHEXTAB
+         TR    DVBWORD2,DVBHEXTAB
+         TR    DVBWORD3,DVBHEXTAB
+         TR    DVBWORD4,DVBHEXTAB
+         TR    DVBWORD5,DVBHEXTAB
+         TR    DVBWORD6,DVBHEXTAB
+         TR    DVBWORD7,DVBHEXTAB
+         TR    DVBWORD8,DVBHEXTAB
+         MVI   DVBWORD1+8,C' '
+         MVI   DVBWORD2+8,C' '
+         MVI   DVBWORD3+8,C' '
+         MVI   DVBWORD4+8,C' '
+         MVI   DVBWORD5+8,C' '
+         MVI   DVBWORD6+8,C' '
+         MVI   DVBWORD7+8,C' '
+         MVI   DVBWORD8+8,C' '
+         MVC   DVBTEXT,0(4)
+         J     DVB0400
+DVB0200  LA    1,DVBTAB
+DVB0300  LH    15,0(,1)            LOAD THE OFFSET
+         AR    15,4                COMPUTE THE ADDRESS
+         LH    14,2(,1)            LOAD THE OUTPUT LINE OFFSET
+         LA    14,DVBRDW(14)       COMPUTE THE ADDRESS
+         UNPK  0(3,14),0(2,15)     TRANSLATE 1 BYTE TO 2 HEX DIGITS
+         TR    0(2,14),DVBHEXTAB
+         MVI   2(14),C' '
+         LH    14,4(,1)            LOAD THE OUTPUT LINE OFFSET
+         LA    14,DVBRDW(14)       COMPUTE THE ADDRESS
+         MVC   0(1,14),0(15)
+         LA    1,6(,1)             COMPUTE ADDR OF NEXT DVBTAB ENTRY
+         BRCT  0,DVB0300           GO DO THE NEXT BYTE
+DVB0400  TR    DVBTEXT,DVBTRTAB    CONVERT DVBTEXT TO PRINTABLE
+         LA    1,DVBRDW            LOAD ADDR OF DVBRDW
+         BRAS  14,OUTEDIT          WRITE THE LINE
+         AHI   4,32                UPDATE THE LINE POINTER
+         J     DVB0100             GO DO THE NEXT LINE
+DVB0500  L     13,4(,13)           LOAD ADDR OF THE PREVIOUS SAVE AREA
+         RETURN (14,12),T          RESTORE REGS & RETURN
+         SPACE 1
+         DROP  10                  KILL DVBLINE ADDRESSABILITY
+         EJECT
+* GET RUN TIME PARAMETERS FROM SYSIN
+         CNOP  0,8
+GETPARM  BASR  15,0                STORE CURRENT ADDR IN REG 15
+         SAVE  (14,12),,GETPARM    SAVE REGISTERS
+         LA    15,72(,13)          COMPUTE ADDR OF THE NEXT SAVE AREA
+         ST    13,4(,15)           ADD NEW SAVE AREA TO THE
+         ST    15,8(,13)            SAVE AREA CHAIN
+         LR    13,15               ESTABLISH NEW SAVE AREA POINTER
+         DEVTYPE DCBDDNAM-IHADCB+SYSIN,16(,13)  TEST IF SYSIN DD      ->
+                                                 STATEMENT IS PRESENT
+         LTR   15,15               TEST DEVTYPE RETURN CODE
+         JNZ   GP3300              BR IF SYSIN IS NOT PRESENT
+         LA    1,OPARM4            LOAD ADDR OF THE OPEN PARM LIST
+         BRAS  14,OPENLIST         OPEN SYSIN
+         LTR   15,15               TEST THE RETURN CODE
+         JNZ   GP3300              BR IF SYSIN DID NOT OPEN
+GP0100   GET   SYSIN               GET A RECORD
+         LR    2,1                 COPY THE RECORD ADDR TO REG 2
+         LA    1,FMT04             LOAD ADDR OF THE FORMAT
+         BRAS  14,FMTLINE          ECHO THE STATEMENT
+         CLI   0(2),C'*'           TEST IF COMMENT
+         JE    GP0100              BR IF SO
+         LR    3,2                 COPY THE RECORD ADDRESS TO REG 3
+         LHI   4,1                 SET REG 4 = 1
+         LA    5,70(,3)            SET REG 5 = ADDR OF END OF SCAN AREA
+GP0200   CLC   =C'FROM ',0(3)      TEST IF FROM DATE/TIME
+         JE    GP1900              BR IF SO
+         CLC   =C'TO ',0(3)        TEST IF TO DATE/TIME
+         JE    GP2000              BR IF SO
+*                 0----+--
+         CLC   =C'SELECT ',0(3)    TEST IF SELECT
+         JE    GP0300              BR IF NOT
+*                 0----+---
+         CLC   =C'EXCLUDE ',0(3)   TEST IF EXCLUDE
+         JE    GP0400              BR IF NOT
+         BRXLE 3,4,GP0200          BUMP POINTER AND TRY AFAIN
+         SETCC RC,4                RESET THE RC
+         J     GP0100              GO GET THE EXT STATEMENT
+GP0300   SR    10,10               SET REG 10 = 0
+         LA    3,7(,3)             SET REG 3 = START OF THE SCAN AREA
+         XC    STAB,STAB           CLEAR THE SELECT TABLE
+         J     GP0500
+GP0400   LA    3,8(,3)             SET REG 3 = START OF THE SCAN AREA
+         LHI   10,4                SET REG 10 = 4
+         MVI   STAB,X'FF'          SET STAB
+         MVC   STAB+1(L'STAB-1),STAB
+GP0500   CLI   0(3),C' '           TEST IF BLANK
+         JNE   GP0800              BR IF NOT
+         BRXLE 3,4,GP0500          CONTINUE IF BLANK
+         J     GP3200              IGNORE
+GP0600   TRT   0(*-*,14),TESTNUM   ** EXECUTE ONLY **
+GP0700   PACK  16(8,13),0(*-*,14)  ** EXECUTE ONLY **
+GP0800   LR    14,3                SAVE START
+GP0900   CLI   0(3),C' '           TEST IF END
+         JE    GP1000              BR IF SO
+         CLI   0(3),C','           TEST IF END
+         JE    GP1000              BR IF SO
+         CLI   0(3),C'-'           TEST IF END
+         JE    GP1000              BR IF SO
+         BRXLE 3,4,GP0900          KEEP SCANNING
+GP1000   LR    15,3                COPY END OF TOKEN TO REG 15
+         SR    15,14               COMPUTE TOKEN LENGTH
+         JNP   GP3200              BR IF BAD
+         BCTR  15,0                REDUCE LENGTH BY 1
+         ST    2,28(,13)           SAVE REG 2
+         EX    15,GP0600           TEST IF NUMERIC
+         L     2,28(,13)           RESTORE REG 2
+         JNZ   GP3200              IGNORE IF NOT NUMERIC
+         EX    15,GP0700           CONVERT TEXT TO BINARY
+         CVB   6,16(,13)
+         LR    7,6                 SET END = START
+         CLI   0(3),C'-'           TEST IF RANGE
+         JNE   GP1500              BR IF NOT
+         BRXLE 3,4,GP1100          BUMP REG 3 PAST THE -
+         J     GP3200              RANGE AT END OF STATEMENT
+GP1100   LR    14,3                SAVE START
+GP1200   CLI   0(3),C' '           TEST IF END
+         JE    GP1300              BR IF SO
+         CLI   0(3),C','           TEST IF END
+         JE    GP1300              BR IF SO
+         BRXLE 3,4,GP1200          CONTINUE
+GP1300   LR    15,3                COPY END TO REG 15
+         SR    15,14               COMPUTE THE LENGTH
+         JP    GP1400              BR IF OK
+         J     GP3200
+GP1400   BCTR  15,0                REDUCE LENGTH BY 1
+         ST    2,28(,13)           SAVE REG 2
+         EX    15,GP0600           TEST IF NUMERIC
+         L     2,28(,13)           RESTORE REG 2
+         JNZ   GP3200              IGNORE IF NOT NUMERIC
+         EX    15,GP0700           CONVERT TEXT DIGITS TO BINARY
+         CVB   7,16(,13)
+GP1500   CHI   6,255               TEST START VALUE
+         JH    GP3200              IGNORE IF BAD
+         CHI   7,255               TEST END VALUE
+         JH    GP3200              BR IF OK
+         CR    7,6                 COMPARE END AND START
+         JL    GP3200              BR IF END < START
+         SR    7,6                 COMPUTE RANGE
+         AHI   7,1                 ADD 1 TO RANGE
+         LA    6,STAB(6)           COMPUTE START
+         B     *+4(10)             BR BASED ON STATEMENT TYPE
+         J     GP1600              SELECT STATEMENT
+         J     GP1700              EXCLUDE STATEMENT
+GP1600   L     1,=AL1(X'FF',0,0,0) LOAD FILL
+         J     GP1800
+GP1700   SR    1,1                 LOAD FILL
+GP1800   MVCL  6,0                 UPDATE SELECT TABLE
+         CLI   0(3),C','           TEST IF MORE
+         JNE   GP0100              BR IF NOT
+         BRXLE 3,4,GP0800          BUMP POINTER & CONTINUE
+         J     GP0100              GET NEXT STATEMENT
+*0----+----1
+*FROM YYYY/MM/DD HH:MM
+*TO YYYY/MM/DD HH:MM
+GP1900   LA    3,5(,3)             SET REG 3 = START OF VARIABLE AREA
+         LA    10,FROMTIME         SET REG 10 = ADDR OF DATE/TIME AREA
+         J     GP2100              BR TO COMMON CODE
+GP2000   LA    3,3(,3)             SET REG 3 = START OF VARIABLE AREA
+         LA    10,TOTIME           SET REG 10 = ADDR OF DATE/TIME AREA
+GP2100   CLI   0(3),C' '           TEST IF BLANK
+         JNE   GP2200              BR IF NOT
+         BRXLE 3,4,GP2100          BUMP REG 3 AND TRY AGAIN
+         J     GP0100              NOTHING, GET THE  NEXT RECORD
+* 0----+----1----+----2
+* YYYY/MM/DD HH:MM
+GP2200   TRT   0(4,3),TESTNUM      TEST IF YYYY AREA IS NUMERIC
+         JZ    GP2300              BR IF OK
+         J     GP3200
+GP2300   CLI   4(3),C'/'           TEST SEPARATOR
+         JNE   GP3200
+         TRT   5(2,3),TESTNUM      TEST IF MM NUMERIC
+         JNZ   GP3200              BR IF NOT
+         CLI   7(3),C'/'           TEST SEPARATOR
+         JE    GP2400              BR IF /
+         J     GP0100
+GP2400   TRT   8(2,3),TESTNUM      TEST IF DD IS NUMERIC
+         JNZ   GP3200              BR IF NOT
+         CLI   10(3),C' '          TEST IF BLANK AFTER DD
+         JNE   GP3200              BR IF NOT
+         PACK  16(8,13),0(4,3)     CONVERT YYYY
+         CVB   6,16(,13)            TO BINARY
+         CHI   6,1900              COMPARE YYYY W/ 1900
+         JL    GP3200              BR IF YEAR < 1900
+         PACK  16(8,13),5(2,3)     CONVERT MM
+         CVB   7,16(,13)            TO BINARY
+         LTR   7,7                 TEST MM
+         JZ    GP3200              BR IF  0
+         CHI   7,12                TEST MM
+         JH    GP3200              BR IF MM > 12
+         PACK  16(8,13),8(2,3)     CONVERT DD
+         CVB   8,16(,13)            TO BIMARY
+         LTR   8,8                 TEST DD
+         JZ    GP3200              BR IF DD = 0
+         CHI   8,31                TEST DD
+         JH    GP3200              BR IF DD > 31
+         SLL   7,1                 MULTIPLY MM BY 2
+         AH    8,MONTAB(7)         COMPUTE DAY OF YEAR
+         CHI   8,31+29             COMPARE DAY OF YEAR W/ DAY OF YEAR ->
+                                    FOR FEB 29
+         JL    GP2600              BR IF DAY OF YEAR DOES NOT HAVE    ->
+                                    TO BE ADJUSTED
+         LR    15,6                COPY YYYY TO REG 15
+         LR    14,6                 AND REG 14
+         N     14,=A(B'11')        TEST IF YYYY IS A POSIBLE LEAR YEAR
+         JNZ   GP2500              BR IF YYYY IS NOT A LEAP YEAR
+         D     14,=F'100'          DIVIDE YYYY BY 100
+         LTR   14,14               TEST IF YYYY IS A CENTURY YEAR
+         JNZ   GP2600              BR IF YYYY IS A LEAP YEAR
+         N     15,=A(B'11')        TEST IF CENTURY YEAR DIVISIBLE     ->
+                                    BY 400
+         JZ    GP2600              BR IF CENTURY YEAR LEAP YEAR
+GP2500   AHI   8,-1                YEAR IS NOT A LEAP YEAR AND DAY OF ->
+                                    YEAR > FEB 28, SUBTRACT 1 FROM    ->
+                                     DAY OF YEAR
+GP2600   AHI   6,-1900             CONVERT YYYY TO CYY
+         MHI   6,1000              MULTIPLY CYY BY 1000
+         AR    6,8                 ADD DDD TO CYY
+         LA    3,11(,3)            SET REG 3 = START OF TIME AREA
+* 0----+----1
+* HH:MM:SS
+GP2700   CLI   0(3),C' '           TEST IF START OF TIME
+         JNE   GP2800              BR IF SO
+         BRXLE 3,4,GP2700          BUMP POINTER & TRY AGAIN
+         L     14,0(,10)           SET TIME TO 0
+         J     GP3100              NO TIME
+GP2800   TRT   0(1,3),TESTNUM      TEST IF THE FIRST CHARACTER IS     ->
+                                    NUMERIC
+         JZ    GP2900              BR IF SO
+         L     14,0(,10)           FIELD IS PRESUMABLY A COMMENT,     ->
+                                    SET REG 14 = DEFAULT TIME
+         J     GP3100              NO TIME DATA
+GP2900   TRT   0(2,3),TESTNUM      TEST IF HH NUMERIC
+         JNZ   GP3200              BR IF NOT
+         CLI   2(3),C':'           TEST SEPARATOR
+         JNE   GP3200              BR IF NOT :
+         TRT   3(2,3),TESTNUM      TEST IF MM NUMERIC
+         JNZ   GP3200              BR IF NOT
+         PACK  16(8,13),0(2,3)     CONVERT HH
+         CVB   14,16(,13)           TO BINARY
+         CHI   14,23               TEST HH
+         JH    GP3200              BR IF HH > 23
+         PACK  16(8,13),3(2,3)     CONVERT MM
+         CVB   15,16(,13)           TO BINARY
+         CHI   15,59               TEST MM
+         JH    GP3200              BR IF MM IS INVALID
+         SR    0,0                 SET SS = 0
+         CLI   5(3),C' '           TEST IF SS PRESENT
+         JE    GP3000              BR IF NOT
+         CLI   5(3),C':'           TEST SEPARATOR
+         JNE   GP3200              NOT :
+         TRT   6(2,3),TESTNUM      VERIFY SS IS NUMERIC
+         JNZ   GP3200              BR IF NOT
+         PACK  16(8,13),6(2,3)     CONVERT SS
+         CVB   0,16(,13)            TO BINARY
+         CHI   0,59                TEST SS
+         JH    GP3200              IGNORE IF BAD
+GP3000   MHI   15,60               MULTIPLY MM BY 60
+         AR    15,0                ADD SS TO ADJUSTED MM
+         MHI   14,60*60            CONVERT HH TO SECONDS
+         AR    14,15               ADD MMSS TO HH
+         MHI   14,100              MULTIPLY HHMMSS BY 100
+GP3100   CVD   6,16(,13)           CONVERT CYYDDD TO DECIMAL
+         OI    16+7(13),X'0F'      CHANGE THE SIGN
+         MVC   4(4,10),20(13)      COPY CYYDDD TO THE DATE AREA
+         ST    14,0(,10)           STORE TIME OF DAY
+         J     GP0100              GO CHECK THE NEXT RECORD
+GP3200   SETCC RC,4                SET RC = 4
+         J     GP0100
+GP3300   LA    1,CPARM4            LOAD ADDR OF THE CLOSE PARM LIST
+         BRAS  14,CLOSELST         CLOSE SYSIN
+         CP    FROMTIME+4(4),TOTIME+4(4)  COMPARE DATES
+         JL    GP3500              BR IF FROM DATE < TO DATE
+         JNE   GP3400              BR IF FROM DATE > TO DATE
+         L     0,FROMTIME          LOAD TIME OF DAY
+         C     0,TOTIME            COMPARE TIME OF DAY
+         JL    GP3500              BR IF OK
+GP3400   XC    FROMTIME,TOTIME     FROM > TO, SWITCH THEM
+         XC    TOTIME,FROMTIME
+         XC    FROMTIME,TOTIME
+GP3500   L     13,4(,13)           LOAD ADDR OF THE PREVIOUS SAVE AREA
+         RETURN (14,12),T          RESTORE REGS & RETURN
+         EJECT
+         CNOP  0,8
+OPENLIST BASR  15,0                STORE CURRENT ADDRESS IN REG 15
+         SAVE  (14,2),,OPENLIST    SAVE REGISTERS
+         LR    2,1                 COPY PARM LIST ADDR TO REG 2
+         OPEN  MF=(E,(2))          OPEN THE DCBS
+         SR    15,15               SET PRELIMINARY RETURN CODE
+OL0100   L     1,0(,2)             LOAD A DCB ADDRESS
+         N     1,=A(X'FFFFFF')     ISOLATE THE 24-BIT DCB ADDRESS
+         TM    DCBOFLGS-IHADCB(1),DCBOFOPN  TEST IF THE DCB IS OPEN
+         JO    *+8                 BR IF SO
+         LHI   15,4                RESET THE RETURN CODE
+         TM    0(2),X'80'          TEST IF END OF THE PARM LIST
+         LA    2,4(,2)             COMPUTE ADDR OF THE NEXT DCB POINTER
+         JZ    OL0100              BR IF NOT END OF PARM LIST
+         RETURN (14,2),T,RC=(15)   RESTORE REGS & RETURN
+         EJECT
+         CNOP  0,8
+CLOSELST BASR  15,0                STORE CURRENT ADDRESS IN REG 15
+         SAVE  (14,2),,CLOSELST    SAVE REGISTERS
+         LR    2,1                 COPY PARM LIST ADDR TO REG 2
+         CLOSE MF=(E,(1))          CLOSE THE DCBS
+CL0100   L     1,0(,2)             LOAD A DCB ADDR FROM THE PARM LIST
+         N     1,=A(X'FFFFFF')     ISOLATE THE 24-BIT DCB ADDRESS
+         TM    DCBOFLGS-IHADCB(1),DCBOFOPN  TEST IF THE DCB IS OPEN
+         JO    CL0200              BR IF SO
+         TM    (DCBBUFCB-IHADCB)+3(1),1  TEST IF THERE IS A BUFFER POOL
+         JZ    CL0200              BR IF NOT
+         FREEPOOL (1)              FREE THE BUFFER POOL
+CL0200   TM    0(2),X'80'          TEST IF END OF THE PARM LIST
+         LA    2,4(,2)             COMPUTE ADDR OF NEXT DCB POINTER
+         JZ    CL0200              BR IF NOT END OF THE PARM LIST
+         RETURN (14,2),T           RESTORE REGS & RETURN
+         EJECT
+         CNOP  2,8
+PARMSCAN BASR  15,0
+         SAVE  (14,12),,PARMSCAN   SAVE REGISTERS
+         LH    5,0(,2)             LOAD BYTES IN PARM TEXT
+         LTR   5,5                 TEST COUNT
+         JZ    PS0800              BR IF 0
+         LA    5,1(5,2)            COMPUTE ADDRESS OF LAST BYTE IN    ->
+                                    PARM TEXT
+         LA    4,1                 SET REG 4
+         LA    3,2(,2)             COMPUTE ADDRESS OF FIRST BYTE IN   ->
+                                    PARM TEXT
+PS0100   LR    6,3                 SET REG 6 IF FIRST BYTE OF OPTION
+PS0200   CLI   0(3),C','           END OF OPTION?
+         JE    PS0300              YES
+         BRXLE 3,4,PS0200          BUMP REG 3
+PS0300   LR    7,3                 COMPUTE BYTES
+         SR    7,6                  IN OPTION
+         JNP   PS0700              IGNORE IF 0
+         LA    1,PSOPTAB           COMPUTE ADDRESS OF THE OPTION TABLE
+         BCTR  7,0                 REDUCE LENGTH OF OPTION BY 1
+PS0400   CLI   0(1),X'FF'          END OF OPTION TABLE?
+         JE    PS0600              YES
+         EX    7,P09000            OPTION LENGTH = L'KEYWORD?
+         JNE   PS0500              NO
+         EX    7,PS1000            OPTION = KEYWORD?
+         JNE   PS0500              NO
+         NC    PSOPTION,2(1)       RESET OPTION BITS
+         OC    PSOPTION,1(1)       RESET OPTION BUTS
+         J     PS0800
+PS0500   SR    15,15               COPY ADDRESS OF NEXT
+         LA    1,4(15,1)            OPTION KEYWORD
+         J     PS0400              COMTINUE SCAN OF KEYWORDS
+PS0600   DC    0H'0'               PARM OPTION ¬= ANY VALID KEYWORD
+PS0700   BXLE  3,4,PS0100          BUMP TO NEXT BYTE IN PARM TEXT
+PS0800   RETURN (14,7)             RESTORE REGISTERS & RETURN
+P09000   CLI   0(1),*-*            ** EX ONLY **
+PS1000   CLC   0(*-*,6),3(1)       ** EX ONLY **
+PSOPTAB  DC    AL1(7,WRITEHDR,X'FF'),C'WRITEHDR'
+         DC    X'FF'
+         EJECT
+         CNOP  0,8
+FMTLINE  BASR  15,0                STORE CURRENT ADDRESS IN REG 15
+         SAVE  14,,FMTLINE         SAVE REG 15
+         LA    15,72(,13)          COMPUTE ADDR OF THE NEXT SAVE AREA
+         ST    15,8(,13)           ADD NEW SAVE AREA TO THE
+         ST    13,4(,15)            SAVE AREA CHAIN
+         LR    13,15               ESTABLISH NEW SAVE AREA POINTER
+         LA    0,FMTWORK           LOAD ADDR OF THE MINIFMT WORK AREA
+         L     15,=V(MINIFMT)      LOAD ADDR OF MINIFMT
+         CALL  (15)                FORMAT THE LINE
+         BRAS  14,OUTEDIT          WRITE THE FORMATTED LINE
+         L     13,4(,13)           LOAD ADDR OF THE PREVIOUS SAVE AREA
+         RETURN 14,T               RESTORE REG 14 & RETURN
+         EJECT
+         CNOP  0,8
+OUTEDIT  BASR  15,0                STORE CURRENT ADDRESS IN REG 15
+         SAVE  (14,4),,OUTEDIT     SAVE REGISTERS
+         LR    2,1                 COPY LINE ADDRESS TO REG 2
+         SR    3,3                 SET REG 3 = 0
+         SR    4,4                 SET REG 4 = 0
+         LA    15,72(,13)          COMPUTE ADDR OF THE NEXT SAVE AREA
+         ST    15,8(,13)           ADD NEW SAVE AREA TO THE
+         ST    13,4(,15)            SAVE AREA CHAIN
+         LR    13,15               ESTABLISH NEW SAVE AREA POINTER
+         IC    3,4(,1)             LOAD CARRIAGE CONTROL CHARACTER
+         IC    4,OELINES(3)        LOAD LINES THIS LINE WILL PRINT
+         AH    4,LINECT            ADD CURRENT PAGE POSITION
+         CHI   4,60                COMPARE NEW PAGE POSITION WITH     ->
+                                    MAX LINES ON A PAGE
+         JNH   OE0100              BR IF NEW LINE WILL FIT ON THE     ->
+                                    CURRENT PAGE
+         AP    PAGENUM,=P'1'       ADD 1 TO THE PAGE NUMBER
+         MVC   PAGE#,=X'402020202120'  CONVERT PAGE NUMBER TO DIGITS
+         ED    PAGE#,PAGENUM
+         PUT   PRINT,PAGEHDR       WRITE THE PAGE HEADER
+         MVI   4(2),C'0'           REPLACE ORIGINAL CARRIAGE CONTROL
+         LHI   4,3                 SET NEW PAGE POSITION
+OE0100   PUT   PRINT,(2)           WRITE THE LINE
+         STH   4,LINECT            UPDATE THE PAGE POSITION
+         STC   3,4(,2)             RESTORE ORIGINAL VARRIAGE CONTROL
+         L     13,4(,13)           LOAD ADDR OF THE PREVIOUS SAVE AREA
+         RETURN (14,4),T           RESTORE REGISTERS & RETURN
+         DC    0D'0'
+         EJECT
+COPYMAND CSECT
+OELINES  DC    0XL256'0',256X'FF'
+         ORG   OELINES+C' '
+         DC    AL1(1)
+         ORG   OELINES+C'-'
+         DC    AL1(3)
+         ORG   OELINES+C'0'
+         DC    AL1(2)
+         ORG   ,
+TESTNUM  DC    0XL256'0',(C'0')X'04',10X'00',(256-(*-TESTNUM))X'04'
+SAVEAREA DC    (5*9)D'0'           5 72 BYTE OS/360 SAVE AREAS
+FMTWORK  DC    XL200'0'
+DVBTRTAB DC    0CL256' ',(C' ')C'.',C' ',(256-(*-DVBTRTAB))C'.'
+         ORG   DVBTRTAB+C'A'-X'40' LOWER CASE A
+         DC    9AL1(*-DVBTRTAB)    LOWER CASE A THROUGH I
+         ORG   DVBTRTAB+C'J'-X'40' LOWER CASE J
+         DC    9AL1(*-DVBTRTAB)    LOWER CASE J THROUGH R
+         ORG   DVBTRTAB+C'S'-X'40' LOWER CASE S
+         DC    8AL1(*-DVBTRTAB)    LOWER CASE S THROUGH Z
+         ORG   DVBTRTAB+C'A'       UPPER CASE A
+         DC    9AL1(*-DVBTRTAB)    UPPER CASE A THROUGH I
+         ORG   DVBTRTAB+C'J'       UPPER CASE J
+         DC    9AL1(*-DVBTRTAB)    UPPER CASE J THROUGH R
+         ORG   DVBTRTAB+C'S'       UPPER CASE S
+         DC    8AL1(*-DVBTRTAB)    UPPER CASE S THROUGH Z
+         ORG   DVBTRTAB+C'0'       NUMERIC 0
+         DC    10AL1(*-DVBTRTAB)   0 THROUGH 9
+         ORG   ,
+DVBHEXTAB EQU  *-C'0'
+         DC    C'0123456789ABCDEF'
+DVBTAB   DC    AL2(00,DVBWORD1-DVBLINE+00,DVBTEXT-DVBLINE+00)
+         DC    AL2(01,DVBWORD1-DVBLINE+02,DVBTEXT-DVBLINE+01)
+         DC    AL2(02,DVBWORD1-DVBLINE+04,DVBTEXT-DVBLINE+02)
+         DC    AL2(03,DVBWORD1-DVBLINE+06,DVBTEXT-DVBLINE+03)
+         DC    AL2(04,DVBWORD2-DVBLINE+00,DVBTEXT-DVBLINE+04)
+         DC    AL2(05,DVBWORD2-DVBLINE+02,DVBTEXT-DVBLINE+05)
+         DC    AL2(06,DVBWORD2-DVBLINE+04,DVBTEXT-DVBLINE+06)
+         DC    AL2(07,DVBWORD2-DVBLINE+06,DVBTEXT-DVBLINE+07)
+         DC    AL2(08,DVBWORD3-DVBLINE+00,DVBTEXT-DVBLINE+08)
+         DC    AL2(09,DVBWORD3-DVBLINE+02,DVBTEXT-DVBLINE+09)
+         DC    AL2(10,DVBWORD3-DVBLINE+04,DVBTEXT-DVBLINE+10)
+         DC    AL2(11,DVBWORD3-DVBLINE+06,DVBTEXT-DVBLINE+11)
+         DC    AL2(12,DVBWORD4-DVBLINE+00,DVBTEXT-DVBLINE+12)
+         DC    AL2(13,DVBWORD4-DVBLINE+02,DVBTEXT-DVBLINE+13)
+         DC    AL2(14,DVBWORD4-DVBLINE+04,DVBTEXT-DVBLINE+14)
+         DC    AL2(15,DVBWORD4-DVBLINE+06,DVBTEXT-DVBLINE+15)
+         DC    AL2(16,DVBWORD5-DVBLINE+00,DVBTEXT-DVBLINE+16)
+         DC    AL2(17,DVBWORD5-DVBLINE+02,DVBTEXT-DVBLINE+17)
+         DC    AL2(18,DVBWORD5-DVBLINE+04,DVBTEXT-DVBLINE+18)
+         DC    AL2(19,DVBWORD5-DVBLINE+06,DVBTEXT-DVBLINE+19)
+         DC    AL2(20,DVBWORD6-DVBLINE+00,DVBTEXT-DVBLINE+20)
+         DC    AL2(21,DVBWORD6-DVBLINE+02,DVBTEXT-DVBLINE+21)
+         DC    AL2(22,DVBWORD6-DVBLINE+04,DVBTEXT-DVBLINE+22)
+         DC    AL2(23,DVBWORD6-DVBLINE+06,DVBTEXT-DVBLINE+23)
+         DC    AL2(24,DVBWORD7-DVBLINE+00,DVBTEXT-DVBLINE+24)
+         DC    AL2(25,DVBWORD7-DVBLINE+02,DVBTEXT-DVBLINE+25)
+         DC    AL2(26,DVBWORD7-DVBLINE+04,DVBTEXT-DVBLINE+26)
+         DC    AL2(27,DVBWORD7-DVBLINE+06,DVBTEXT-DVBLINE+27)
+         DC    AL2(28,DVBWORD8-DVBLINE+00,DVBTEXT-DVBLINE+28)
+         DC    AL2(29,DVBWORD8-DVBLINE+02,DVBTEXT-DVBLINE+29)
+         DC    AL2(30,DVBWORD8-DVBLINE+04,DVBTEXT-DVBLINE+30)
+         DC    AL2(31,DVBWORD8-DVBLINE+06,DVBTEXT-DVBLINE+31)
+LOWDATE  DC    0XL8'0',XL4'0',XL4'0999999F'
+HIGHDATE DC    0XL8'0',XL4'0',XL4'0000000F'
+FROMTIME DC    0XL8'0',A(0),PL4'0'
+TOTIME   DC    0XL8'0',A(24*68*60*100-1),PL4'199365'
+DSTART   DC    D'0'
+DEND     DC    D'0'
+LINECT   DC    H'255'
+MONTAB   DC    2AL2(0)                               JAN
+         DC    AL2(31)                               FEB
+         DC    AL2(31+29)                            MAR
+         DC    AL2(31+29+31)                         APR
+         DC    AL2(31+29+31+30)                      MAY
+         DC    AL2(31+29+31+30+31)                   JUN
+         DC    AL2(31+29+31+30+31+30)                JUL
+         DC    AL2(31+29+31+30+31+30+31)             AUG
+         DC    AL2(31+29+31+30+31+30+31+31)          SEP
+         DC    AL2(31+29+31+30+31+30+31+31+30)       OCT
+         DC    AL2(31+29+31+30+31+30+31+31+30+31)    NOV
+         DC    AL2(31+29+31+30+31+30+31+31+30+31+30) DEC
+T2REC    DC    0XL(T2LEN)'00',AL2(T2LEN,0),AL1(0,2),XL(T2LEN-6)'00'
+T3REC    DC    0XL(T3LEN)'00',AL2(T3LEN,0),AL1(0,3),XL(T3LEN-6)'00'
+         DC    0F'0'
+         PUSH  PRINT
+         PRINT NOGEN
+OPARM1   OPEN  (PRINT,OUTPUT),MF=L
+CPARM1   CLOSE PRINT,MF=L
+OPARM2   OPEN  (SMFIN,INPUT),MF=L
+CPARM2   CLOSE SMFIN,MF=L
+OPARM3   OPEN  (SMFOUT,OUTPUT),MF=L
+CPARM3   CLOSE SMFOUT,MF=L
+OPARM4   OPEN  (SYSIN,INPUT),MF=L
+CPARM4   CLOSE SYSIN,MF=L
+JFCBPRM  OPEN  (JFCBDCB,INPUT),MF=L
+JFCBDCB  DCB   DSORG=PS,MACRF=GL,DDNAME=FILLMEIN,EXLST=XLIST2
+XLIST2   DC    0A(0),AL1(X'80'+7),AL3(JFCB)
+JFCB     DC    0XL176'0'
+         IEFJFCBN ,
+PRINT    DCB   DSORG=PS,MACRF=PM,DDNAME=SYSPRINT,RECFM=VBA,LRECL=125
+SMFIN    ACB   DDNAME=SMFIN,BUFND=10,MACRF=(ADR,SEQ,IN),              ->
+               AM=VSAM,EXLST=XLIST1
+         DC    0F'0'
+SMFRPL   RPL   ACB=SMFIN,AREALEN=L'IOBUF,AREA=IOBUF,                  ->
+               OPTCD=(ADR,SEQ,MVE,SYN,NUP),AM=VSAM
+         DC    0F'0'
+XLIST1   EXLST EODAD=(SMFEOF,A)
+SYSIN    DCB   DSORG=PS,MACRF=GL,DDNAME=SYSIN,EODAD=GP3300
+SMFOUT   DCB   DSORG=PS,MACRF=PM,DDNAME=SMFOUT,RECFM=VBS,LRECL=32767
+         POP   PRINT
+IOBUFL   DC    A(32767)
+         DC    0D'0'
+         LTORG ,
+PSOPTION DC    AL1(0)
+WRITEHDR EQU   B'00010000'
+LEFT     EQU   ((120-L'HDR)/2)+1
+RIGHT    EQU   111-LEFT-L'HDR
+PAGEHDR  DC    AL2(PAGEHDRL,0),CL(LEFT)'1(COPYMAN &SYSDATE &SYSTIME)'
+HDR      DC    C'F A N D E Z H I   S M F   M A N   R E A D E R'
+         DC    CL(RIGHT)' ',C'PAGE'
+PAGE#    DC    C' NNNNN'
+PAGEHDRL EQU   *-PAGEHDR
+PAGENUM  DC    P'00000'
+         SPACE 1
+DVBHDR   DC    AL2(DVBHDRL,0),C'-THE FOLLOWING RECORD NOT DUMPED'
+DVBHDRL  EQU   *-DVBHDR
+         SPACE 1
+FMT01    DC    AL.2(3),AL.6(4),AL1(1,1),X'FF'
+         SPACE 1
+*                                AVERAGE
+* SMF  INPUT    PER-    INPUT     RECORD
+* REC RECORDS   CENT    BYTES     LENGTH
+* NNN NNNNNNNN NNN.NN NNNNNNNNNN NNNNN.NN
+HDR01    DC    AL1(L'HDR01A)
+HDR01A   DC    C'0                               AVERAGE',AL1(L'HDR01B)
+HDR01B   DC    C'                            AVERAGE',X'FF'
+         SPACE 1
+HDR02    DC    AL1(L'HDR01A)
+HDR02A   DC    C' SMF   INPUT   PER-      INPUT   RECORD',AL1(L'HDR02B)
+HDR02B   DC    C'  OUTPUT   PER-     OUTPUT   RECORD',X'FF'
+         SPACE 1
+HDR03    DC    AL1(L'HDR03A)
+HDR03A   DC    C' REC RECORDS   CENT      BYTES   LENGTH',AL1(L'HDR03B)
+HDR03B   DC    C' RECORDS   CENT      BYTES   LENGTH',X'FF'
+         SPACE 1
+FMT02    DC    AL1(1),C' '
+         DC    AL.2(3),AL.6(1),AL1(4,3),SL2(36(13))  REG 4
+         DC    AL.2(3),AL.6(1),AL1(4,8),SL2(0(3))    INPUT COUNT
+         DC    AL.2(3),AL.6(0),AL1(L'PCTIN,L'PCTIN),SL2(PCTIN)
+         DC    AL.2(3),AL.6(1),AL1(4,11),SL2(4(3))    INPUT BYTES
+         DC    AL.2(3),AL.6(0),AL1(L'AVGIN,L'AVGIN),SL2(AVGIN)
+         DC    AL.2(3),AL.6(1),AL1(4,8),SL2(16(3))   OUTPUT COUNT
+         DC    AL.2(3),AL.6(0),AL1(L'PCTOUT,L'PCTOUT),SL2(PCTOUT)
+         DC    AL.2(3),AL.6(1),AL1(4,11),SL2(20(3))   OUTPUT BYTES
+         DC    AL.2(3),AL.6(0),AL1(L'AVGOUT,L'AVGOUT),SL2(AVGOUT),X'FF'
+         SPACE 1
+FMT03    DC    AL1(1),C' '
+         DC    AL.2(3),AL.6(1),AL1(4,0),SL2(56(13))   REG 9
+         DC    AL1(L'FMT03B)
+FMT03B   DC    C' INPUT RECORDS, '
+         DC    AL.2(3),AL.6(1),AL1(4,0),SL2(60(13))   REG 10
+         DC    AL1(L'FMT03C)
+FMT03C   DC    C' OUTPUT RECORDS',X'FF'
+         SPACE 1
+FMT04    DC    AL1(1),C' '
+         DC    AL.2(3),AL.6(0),AL1(80,0),SL2(0(2)),X'FF'
+         SPACE 1
+FMT05    DC    AL1(L'FMT05A)
+FMT05A   DC    C' MAN DATASET IS EMPTY!',X'FF'
+         SPACE 1
+FMT06    DC    AL1(L'FMT06A)
+FMT06A   DC    C' SMF DATA FROM '
+         DC    AL.2(3),AL.6(5),AL1(1,3),SL2(LOWDATE),AL1(4),CL4' TO '
+         DC    AL.2(3),AL.6(5),AL1(1,3),SL2(HIGHDATE),X'FF'
+         SPACE 1
+         USING IFGRPL,SMFRPL
+FMT07    DC    AL1(L'FMT07A)
+FMT07A   DC    C' GET RPL RC = '
+         DC    AL.2(3),AL.6(1),AL1(4,0),SL2(28(13)),AL1(L'FMT07B)
+FMT07B   DC    C', RPLSTAT=X'''
+         DC    AL.2(3),AL.6(2),AL1(1,0),SL2(RPLSTAT),AL1(L'FMT07C)
+FMT07C   DC    C''', RPLRTNCD=X'''
+         DC    AL.2(3),AL.6(2),AL1(1,0),SL2(RPLRTNCD),AL1(L'FMT07D)
+FMT07D   DC    C''', RPLCNDCD=X'''
+         DC    AL.2(3),AL.6(2),AL1(2,0),SL2(RPLCNDCD),AL1(L'FMT07E)
+FMT07E   DC    C'''',X'FF'
+         SPACE 1
+FMT08    DC    AL1(L'FMT08A)
+FMT08A   DC    C'-COPYMAN COMPLETE, RC = '
+         DC    AL.2(3),AL.6(1),AL1(L'RC,0),SL2(RC),X'FF'
+         SPACE 1
+FMT09    DC    AL1(L'FMT09A)
+FMT09A   DC    C' DUMP STARTED AT '
+         DC    AL.2(3),AL.6(5),AL1(7,4),SL2(DSTART),AL1(L'FMT09B)
+FMT09B   DC    C' AND ENDED AT '
+         DC    AL.2(3),AL.6(5),AL1(7,4),SL2(DEND),X'FF'
+         SPACE 1
+FMT10    DC    AL1(L'FMT10A)
+FMT10A   DC    C' '
+         DC    AL.2(3),AL.6(0),AL1(6,6),SL2(DCBDDNAM-IHADCB+JFCBDCB)
+         DC    AL1(4),C' -- '
+         DC    AL.2(3),AL.6(0),AL1(L'JFCBDSNM,0),SL2(JFCBDSNM),X'FF'
+         SPACE 1
+FMT11    DC    C' SMFIN DD STATEMENT NOT SPECIFIED, BUT NOT ABLE TO FIN>
+               D THE ACTIVE SMF DATA SET!',X'FF'
+         SPACE 1
+FMT12    DC    AL1(L'FMT12A)
+FMT12A   DC    C' UNABLE TO ALLOCATE THE ACTIVE MAN DATA SET '
+         DC    AL.2(2),AL.2(0),AL1(L'ADSN,0),AL4(ADSN)
+         DC    AL1(1),C'!',X'FF'
+         SPACE 1
+FMT13    DC    AL1(L'FMT13A)
+FMT13A   DC    C' USING THE ACTIVE MAN DATA SET '
+         DC    AL.2(2),AL.2(0),AL1(L'ADSN,0),AL4(ADSN),X'FF'
+         SPACE 1
+AVGIN    DC    0C' NNNNN.NN',C' ',X'2020202120',C'.',X'2020'
+AVGOUT   DC    0C' NNNNN.NN',C' ',X'2020202120',C'.',X'2020'
+AVGMASK  DC    0C' NNNNN.NN',C' ',X'2020202120',C'.',X'2020'
+AVGNULL  DC     C'    --   '
+         SPACE 1
+PCTIN    DC    0C' NNN.NN',C' ',X' 202120',C'.',X'2020'
+PCTOUT   DC    0C' NNN.NN',C' ',X' 202120',C'.',X'2020'
+PCTMASK  DC    0C' NNN.NN',C' ',X' 202120',C'.',X'2020'
+PCTNULL  DC     C'  --   '
+         SPACE 1
+RC       DC    AL1(0)
+         SPACE 5
+A        DC    A(X'80000000'+ARB)
+ARB      DC    AL1(S99RBEND-S99RB,S99VRBAL,S99ONCNV+S99NOCNV+S99NOMNT,0>
+               )
+         DC    2AL2(0)
+         DC    A(ATXTPP,0,0)
+ATXTPP   DC    A(ATXT01,ATXT02,X'80000000'+(ATXT03))
+ATXT01   DC    AL2(DALDSNAM,1,L'ADSN)
+ADSN     DC    CL44' '
+ATXT02   DC    AL2(DALSTATS,1,1),X'08'
+ATXT03   DC    AL2(DALDDNAM,1,L'ADDN)
+ADDN     DC    C'SMFIN'
+         DC    0D'0'
+STAB     DC    0XL256'0',256X'FF'
+RTAB     DC    (256*8)F'0'         RECORD SUMMARY TABLE
+         DC    0D'0'
+IOBUF    DS    XL32767,0D
+         END   COPYMAN
