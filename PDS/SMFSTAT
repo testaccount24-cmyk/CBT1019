@@ -1,0 +1,219 @@
+SMFSTAT  TITLE 'D I S P L A Y   S M F   M A N   D A T A   S E T   S T A>
+                T U S'
+***********************************************************************
+*                                                                     *
+* Title -- SMFSTAT                                                    *
+*                                                                     *
+* Function / Operstion -- SMFSTAT displays SMF data set status on the *
+*  user's terminal.                                                   *
+*                                                                     *
+*  CAPACITY    USED    %   STATUS   DATA SET                          *
+*    72,000     753   1.05 ACTIVE   SYS1.CBT.MAN1                     *
+*    72,000      15   0.02 DUMPREQ  SYS1.CBT.MAN2                     *
+*    72,000       9   0.01 DUMPREQ  SYS1.CBT.MAN3                     *
+*                                                                     *
+* Attributes -- SMFSTAT is reenterable, refreshable and reusable.  It *
+*   operates as a TSO command processor, in task mode, enabled,       *
+*   problem key and problem state.  It uses no APF restricted z/OS    *
+*   resources.                                                        *
+*                                                                     *
+* Status / Change Level --                                            *
+*  V2L0 October 2021                                                  *
+*   - Header and message altered to be a more compact; data set name  *
+*     moved to right in message.  Data set nanes with more thn 42     *
+*     characters will be truncated.                                   *
+*  V1L1 October 2021                                                  *
+*   - Partially interpret RDSFLAG1; ACTIVE and DUMPREQD are currently *
+*     supported; all other values are displayed as hexadecimal.       *
+*  V1L0  September 2016                                               *
+*                                                                     *
+***********************************************************************
+         SPACE 5
+SMFSTAT  RSECT                     Define program CSECT
+SMFSTAT  AMODE 31
+SMFSTAT  RMODE ANY
+         USING CVTMAP,2            Establish CVT addressability
+         USING SMCABASE,3          Establish SMCA addressability
+         USING RDS,4               Establish RDS addressability
+         USING *,12                Establish program addressability
+         USING WA,13               Establish work area addressability
+         SAVE  (14,12),,'SMFSTAT &SYSDATE &SYSTIME'  Save registers
+         LR    12,15               Prepare program base register
+         LM    6,9,0(1)            Load the CPPL into regs 6 to 9
+         LA    5,WASIZE            Allocate the work area
+         GETMAIN R,LV=(5)
+         LR    4,1                 Copy the address to reg 4
+         LA    0,256               Set reg 0 = 256
+CLEARWA  CR    5,0                 Test amount to ckear
+         BNH   CLEARLST            Almost done
+         XC    0(256,4),0(4)       Zap 256 bytes
+         AR    4,0
+         SR    5,0
+         B     CLEARWA             Keep on clearing
+XC       XC    0(*-*,4),0(4)       ** EX only **
+CLEARLST BCTR  5,0                 Clear the end
+         EX    5,XC
+         ST    13,4(,1)            Add new save area to the
+         ST    1,8(,13)             save area chain
+         LR    13,1                Prepare new save area pointer
+         L     2,CVTPTR            Load address of the CVT
+         ICM   0,B'1111',CVTPUTL   Load address of IKJPUTL
+         BNZ   SAVEPUTL
+         LOAD  EPLOC==CL8'IKJPUTL' Load IKJPUTL if not pre loaded
+         OI    SWITCH,LOADED
+SAVEPUTL ST    0,PUTLADDR
+*        MVC   HDRX,HDR            Copy the header to the work area   ->
+                                    because we can't TPUT from above  ->
+                                     the line
+         LA    1,HDR               Write the header
+         BAS   10,PUTTERM
+         L     3,CVTSMCA           Load addrsss of the SMCA
+         LA    4,SMCAFRDS-(RDSNEXT-RDS)  Compute address of a         ->
+                                          dummy RDS
+NEXTRDS  ICM   4,B'1111',RDSNEXT   Load address of the next RDS
+         BZ    EXIT                Br if end of the RDS chain
+         CLC   RDSRDS,=CL4'RDS'    Is it an RDS?
+         BNE   EXIT                No, quit
+         TM    RDSDSN,255-C' '     RDS specify a data set?
+         BZ    TESTLAST            No
+* Prepare the status message
+         MVI   MSG+4,C' '          Clear the message area
+         MVC   MSG+5(MSGL-5),MSG+4
+         MVC   DATASET,RDSDSN      Data set name
+         MVC   64-L'PATT3(L'PATT3,13),PATT3  Copy ED pattern to       ->
+                                              work area
+         L     1,RDSUSED           Load used space
+         CVD   1,DWORK             Convert to decimal
+         ED    64-L'PATT3(L'PATT3,13),DWORK+4  Packed decimal to digits
+         MVC   USED,64-L'USED(13)  Digits to message
+         MVC   64-L'PATT3(L'PATT3,13),PATT3  Ditto
+         L     0,RDSSIZE
+         CVD   0,DWORK
+         ED    64-L'PATT3(L'PATT3,13),DWORK+4
+         MVC   CAPACITY,64-L'CAPACITY(13)
+         UNPK  STATUS+3(3),RDSFLAG1(2) Convert RDSFLAG1
+         TR    STATUS+3(2),HEXTAB       to hex digits
+         MVI   STATUS+5,C' '
+         TM    RDSFLAG1,RDSREADY   Data set open & ready?
+         BZ    TSTACT              No
+         MVC   STATUS,=CL9'AVAILABLE'
+         B     CALCPCT
+TSTACT   DC    0H'0'
+         CLI   RDSFLAG1,RDSACTIVE  Now insert translated status
+         BNE   TSTDUMP
+         MVC   STATUS,=CL9'ACTIVE'
+         B     CALCPCT
+TSTDUMP  TM    RDSFLAG1,RDSDUMP
+         BZ    CALCPCT
+         MVC   STATUS,=CL9'DUMPREQD'
+*        B     CALCPCT
+CALCPCT  DC    0H'0'
+         SR    0,0                 Compute percentage of space used
+         M     0,=A(1000*100)
+         D     0,RDSSIZE
+         CVD   1,DWORK
+         SRP   DWORK,64-1,5
+         MVC   64-L'PATT2(L'PATT2,13),PATT2   ED pattern to work area
+         ED    64-L'PATT2(L'PATT2,13),DWORK+5  Percentage to digits
+         MVC   PCT,64-L'PCT(13)               Digits to message
+         LA    14,MSG+MSGL         Find the end of the data set name
+         BCTR  14,0
+         CLI   0(14),C' '
+         BE    *-6
+         LA    14,1(,14)
+         LA    1,MSG               Write the message
+         SR    14,1
+         SLL   14,16
+         STCM  14,B'1111',MSG
+         BAS   10,PUTTERM
+TESTLAST C     4,SMCALRDS          Last RDS?
+         BNE   NEXTRDS             No
+EXIT     TM    SWITCH,LOADED       IKJPUTL loaded?
+         BZ    X0100               No
+         DELETE EPLOC==CL8'IKJPUTL'  Delete IKJPUTL
+X0100    LR    1,13                Copy work area address to reg 1
+         L     13,4(,13)           Load addr of the higher save area
+         LA    0,WASIZE            Free the work area
+         FREEMAIN R,LV=(0),A=(1)
+         RETURN (14,12),T,RC=0     Restore registers & return
+         EJECT
+         CNOP  0,8
+PUTTERM  ST    2,SAVER2            Save register 2
+         LR    2,1                 Copy the message address to reg 2
+         PUTLINE MF=(E,MYIOPL),PARM=PUTLPB,  Write the message        ->
+               OUTPUT=((2),,SINGLE,DATA),                             ->
+               ECB=ECB,UPT=(RUPT),ECT=(RECT),ENTRY=CALLPUTL
+CALLPUTL L     15,PUTLADDR         Load IKJPUTL address
+         CALL  (15),MF=(E,(1))     Call IKJPUTL
+         L     2,SAVER2            Restore reg 2
+         BR    10                  Return
+         EJECT
+PATT2    DC    0C' NNN.NN',C' ',X'202120',C'.',X'2020'
+PATT3    DC    0C' N,NNN,NNN',C' ',X'20',C',',3X'20',C',',X'202120'
+HDR      DC    AL2(HDRL,0),C'CAPACITY    USED    %   STATUS    '
+         DC    C'DATA SET'
+HDRL     EQU   *-HDR
+         DC    0D'0'
+         LTORG ,
+         DC    0D'0'
+HEXTAB   EQU   *-C'0'
+         DC    C'0123456789ABCDEF'
+         SPACE 2
+RDS      DSECT                     SMF RECORDING DATA SET
+RDSRDS   DS    CL4'RDS'            EYECATCHER
+RDSNEXT  DS    A                   -> NEXT RDS
+RDSPREV  DS    A                   -> PREVIOUS RDS
+RDSFLAG  DS    0AL1
+RDSFLAG1 DS    AL1
+RDSACTIVE EQU  X'00'               DATA SET IS ACTIVE
+RDSFREE  EQU   X'10'               NEED TO FREE DATA SET
+RDSDUMP  EQU   X'08'               DUMP REQUIRED
+RDSREADY EQU   X'04'               DATA SET IS OPEN AND READY
+RDSCLOSE EQU   X'02'               DATA SET NEEDS TO BE CLOSED
+RDSNDOP  EQU   X'01'               DATA SET NEEDS TO BE OPENED
+         DS    2AL1
+RDSDSNL  DS    AL1                 LENGTH OF DATA SET NAME
+RDSDSN   DS    CL44                DATA SET NAME
+RDSVOL   DS    CL6                 VOLUME
+         DS    2AL1
+RDSDDN   DS    CL8                 DDNAME
+RDSSIZE  DS    F                   NUMBER OF BLOCKS IN DATA SET
+RDSUSED  DS    F                   USED BLOCKS IN DATA SET
+         SPACE 2
+         PUSH  PRINT
+         PRINT NOGEN
+         DCBD  DSORG=QS,DEVD=DA
+         CVT   DSECT=YES
+         IEESMCA ,
+         IKJCPPL ,
+RECT     EQU   6+(CPPLECT-CPPL)/4
+RUPT     EQU   6+(CPPLUPT-CPPL)/4
+RPSCB    EQU   6+(CPPLPSCB-CPPL)/4
+         IKJIOPL ,
+IOPLSIZE EQU   *-IOPL
+         SPACE 2
+WA       DSECT                     Work area
+SAVEAREA DS    9D                  72 byte register save area
+DWORK    DS    D                   Double work work area
+MYIOPL   DS    XL(IOPLSIZE),0A     IOPL sent to IKJPUTL
+PUTLPB   PUTLINE MF=L              PUTLINE parameter block
+PUTLADDR DS    A                   IKJPUTL address
+SAVER2   DS    F                   Register 2 when PUTTERM called
+ECB      DS    F                   ECB for PUTLINE
+MSG      DS    AL2(MSGL,0)         Status message printed by PUTLINE
+CAPACITY DS    C' 123,456'
+USED     DS    C' 123,456'
+PCT      DS    C' 100.00',C
+*                ----+----
+STATUS   DS    C'AVAILABLE',C
+DATASET  DS    CL(78-(*-MSG))
+MSGL     EQU   *-MSG
+         SPACE 1
+SWITCH   DS    AL1                 Control flags
+LOADED   EQU   X'80'               IKJPUTL loaded
+         SPACE 1
+*HDRX     DS    XL(HDRL)
+         DS    0D
+WASIZE   EQU   *-WA
+         POP   PRINT
+         END   SMFSTAT
